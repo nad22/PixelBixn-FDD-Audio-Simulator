@@ -1,0 +1,141 @@
+MIT License
+
+Copyright (c) 2025 PixelBixn Floppy Disk Audio Simulator Project
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+
+This project may include third-party libraries and components with their own
+licenses. Please refer to their respective license files:
+
+1. ESP32 Arduino Core - LGPL 2.1
+2. ESPAsyncWebServer - LGPL 2.1
+3. ArduinoJson - MIT License
+4. Adafruit GFX Library - BSD License
+5. Adafruit SSD1306 - BSD License
+6. ESP8266Audio - GPL 3.0
+7. MFRC522 - LGPL 2.1
+8. LittleFS - MIT License
+9. Material Design Components - Apache 2.0
+
+For complete license information of third-party components, please check the
+individual library repositories and their license files.
+
+===============================================================================
+
+HARDWARE DESIGN LICENSE
+
+The hardware designs, schematics, PCB layouts, and mechanical designs included
+in this project are licensed under the CERN Open Hardware Licence Version 2 -
+Strongly Reciprocal (CERN-OHL-S v2).
+
+You may use, copy, modify, and distribute the hardware designs under the terms
+of the CERN-OHL-S v2 license. The full license text is available at:
+https://ohwr.org/cern_ohl_s_v2.txt
+
+===============================================================================
+
+DOCUMENTATION LICENSE
+
+All documentation files (*.md, *.txt, images, diagrams) in this project are
+licensed under the Creative Commons Attribution 4.0 International License
+(CC BY 4.0).
+
+You are free to:
+- Share — copy and redistribute the material in any medium or format
+- Adapt — remix, transform, and build upon the material
+
+Under the following terms:
+- Attribution — You must give appropriate credit, provide a link to the license,
+  and indicate if changes were made.
+
+Full license text: https://creativecommons.org/licenses/by/4.0/
+
+===============================================================================
+
+SOUND FILES LICENSE
+
+Sample sound files included in this project are provided for demonstration
+purposes only. Some sound files may be:
+
+1. Original recordings - Released under MIT License
+2. Public domain sounds - No copyright restrictions
+3. Creative Commons licensed - See individual file credits
+
+Users are responsible for ensuring they have appropriate rights to use any
+sound files in their implementations. The project maintainers are not
+responsible for copyright violations related to sound file usage.
+
+===============================================================================
+
+TRADEMARK NOTICE
+
+"PixelBixn" and "Floppy Disk Audio Simulator" are trademarks of the project
+maintainers. Use of these names in derivative works must comply with
+trademark guidelines and cannot imply official endorsement without permission.
+
+===============================================================================
+
+LIABILITY AND WARRANTY DISCLAIMER
+
+THE HARDWARE DESIGNS, SOFTWARE, AND DOCUMENTATION ARE PROVIDED "AS IS" WITHOUT
+WARRANTY OF ANY KIND. THE AUTHORS DISCLAIM ALL WARRANTIES, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS PROJECT, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGE.
+
+===============================================================================
+
+EXPORT CONTROL NOTICE
+
+This project may contain encryption or other technologies subject to export
+control laws and regulations. Users are responsible for compliance with all
+applicable export control laws and regulations in their jurisdiction.
+
+===============================================================================
+
+CONTRIBUTION AGREEMENT
+
+By contributing to this project, you agree that:
+
+1. Your contributions will be licensed under the same terms as the project
+2. You have the right to license your contributions
+3. You understand that your contributions may be redistributed
+4. You waive any moral rights that may conflict with the project license
+
+===============================================================================
+
+CONTACT INFORMATION
+
+For questions about this license or to request permissions beyond those granted
+herein, please contact:
+
+Project Maintainers: [Your contact information]
+Repository: https://github.com/yourusername/floppy-disk-audio-simulator
+Issues: https://github.com/yourusername/floppy-disk-audio-simulator/issues
+
+Last updated: October 9, 2025
