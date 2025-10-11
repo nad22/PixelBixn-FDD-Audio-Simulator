@@ -293,12 +293,12 @@ void initAudio() {
     // Setup I2S for MAX98357 amplifier
     Serial.println("Initializing I2S audio output for MAX98357...");
     
-    // I2S configuration - MINIMAL for fast init
+    // I2S configuration - Stereo for MAX98357 compatibility
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
         .sample_rate = I2S_SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // Stereo for MAX98357
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = 0,  // Default interrupt
         .dma_buf_count = 2,     // Minimal buffers
@@ -784,22 +784,38 @@ void playWavFileBlocking(const String& filepath) {
     uint32_t sampleRate = header[24] | (header[25] << 8) | (header[26] << 16) | (header[27] << 24);
     uint16_t bitsPerSample = header[34] | (header[35] << 8);
     
-    Serial.printf("WAV Format: %d, Channels: %d, SampleRate: %d, BitsPerSample: %d\n", 
-                  audioFormat, numChannels, sampleRate, bitsPerSample);
+    addDebugLog("WAV: " + String(audioFormat) + " format, " + String(numChannels) + "ch, " + 
+                String(sampleRate) + "Hz, " + String(bitsPerSample) + "bit");
     
     // Validate format (only support PCM 16-bit)
     if(audioFormat != 1) {
-        addDebugLog("Unsupported audio format - only PCM supported");
+        addDebugLog("ERROR: Unsupported audio format - only PCM supported");
         file.close();
         isPlayingAudio = false;
         return;
     }
     
     if(bitsPerSample != 16) {
-        addDebugLog("Unsupported bit depth - only 16-bit supported");
+        addDebugLog("ERROR: Unsupported bit depth - only 16-bit supported");
         file.close();
         isPlayingAudio = false;
         return;
+    }
+    
+    // CRITICAL: Reconfigure I2S for correct sample rate!
+    if(sampleRate != I2S_SAMPLE_RATE) {
+        addDebugLog("Adjusting I2S from " + String(I2S_SAMPLE_RATE) + "Hz to " + String(sampleRate) + "Hz");
+        
+        // Stop current I2S
+        i2s_stop(I2S_NUM_0);
+        
+        // Set new sample rate
+        i2s_set_sample_rates(I2S_NUM_0, sampleRate);
+        
+        // Restart I2S
+        i2s_start(I2S_NUM_0);
+        
+        vTaskDelay(pdMS_TO_TICKS(100));  // Let I2S stabilize with new rate
     }
     
     // Enable audio amplifier
@@ -830,22 +846,18 @@ void playWavFileBlocking(const String& filepath) {
         
         size_t samplesRead = bytesRead / sizeof(int16_t);
         
-        // Handle volume scaling
+        // Simple volume control - no format conversion needed
+        // Apply volume control to mono samples
         for(size_t i = 0; i < samplesRead; i++) {
             buffer[i] = (int16_t)(buffer[i] * config.volume / 100);
         }
         
-        // Convert stereo to mono if needed
-        if(numChannels == 2) {
-            for(size_t i = 0; i < samplesRead / 2; i++) {
-                buffer[i] = (buffer[i * 2] + buffer[i * 2 + 1]) / 2;
-            }
-            samplesRead /= 2;
-        }
-        
-        // Write to I2S
+        // Write same mono data to both stereo channels separately (no buffer manipulation)
         size_t bytesWritten;
-        i2s_write(I2S_NUM_0, buffer, samplesRead * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+        for(size_t i = 0; i < samplesRead; i++) {
+            int16_t stereoSample[2] = {buffer[i], buffer[i]}; // Left = Right
+            i2s_write(I2S_NUM_0, stereoSample, sizeof(stereoSample), &bytesWritten, portMAX_DELAY);
+        }
         
         totalSamplesPlayed += samplesRead;
         
