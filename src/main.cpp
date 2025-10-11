@@ -96,13 +96,21 @@ struct Config {
     char startupSound[64] = "";  // Startup sound (empty = no sound)
     char triggerSound[64] = "";  // Button trigger sound (empty = random)
     bool highGain = false;  // false = 9dB, true = 15dB
+    int delayDiskBoot = 0;      // Delay in ms before floppy animation starts for boot sound
+    int delayDiskTrigger = 0;   // Delay in ms before floppy animation starts for trigger sound
 } config;
 
-// Animation variables
+// Animation variables for random floppy blinking
 unsigned long lastAnimUpdate = 0;
 int animFrame = 0;
 bool isPlaying = false;
 unsigned long playStartTime = 0;
+volatile bool showFloppy = false;           // Show floppy during playback
+volatile bool floppyFilled = false;         // Current state: filled or outline
+volatile bool floppyDisplayed = false;      // Track if floppy is currently displayed
+volatile unsigned long floppyAnimStart = 0; // When animation started (after delay)
+volatile unsigned long nextFloppyToggle = 0; // When to toggle next
+volatile bool isBootSound = false;          // Track if current sound is boot sound
 
 // Button handling variables
 bool lastButtonState = HIGH;
@@ -152,28 +160,59 @@ void scanSoundFiles();
 String getRandomSound();
 void playWavFileBlocking(const String& filepath);  // Direct WAV player (blocking)
 
-// Floppy disk icon drawing function - bigger and better positioned
+// Start floppy animation with delay
+void startFloppyAnimation(bool isBoot) {
+    showFloppy = true;
+    isBootSound = isBoot;
+    floppyAnimStart = millis();
+    floppyDisplayed = false;  // Reset - will be set to true after delay
+    
+    Serial.printf("Floppy animation started (boot=%d, delay=%dms)\n", isBoot, isBoot ? config.delayDiskBoot : config.delayDiskTrigger);
+}
+
+// Stop floppy animation
+void stopFloppyAnimation() {
+    Serial.printf(">>> STOPPING ANIMATION: showFloppy WAS %d\n", showFloppy);
+    showFloppy = false;
+    floppyAnimStart = 0;
+    floppyFilled = false;
+    floppyDisplayed = false;  // CRITICAL: Reset display flag so next trigger works!
+    nextFloppyToggle = 0;
+    
+    // Explicitly clear display NOW
+    u8g2.clearBuffer();
+    u8g2.sendBuffer();
+    
+    Serial.println("Floppy animation stopped - display cleared");
+}
+
+// Floppy disk icon drawing function - EXACT silhouette from reference image
 void drawFloppyDisk(int x, int y, bool filled) {
-    // Floppy disk: 30x30 pixels (bigger for better visibility)
-    // Main body
-    u8g2.drawFrame(x, y, 30, 30);
+    // 3.5" Floppy disk silhouette: 28x28 pixels (solid black with white details)
     
-    if (filled) {
-        u8g2.drawBox(x+1, y+1, 28, 28);
-        // Label (inverted when filled)
-        u8g2.setDrawColor(0);  // Black = erase
-        u8g2.drawBox(x+5, y+7, 20, 12);
-        u8g2.setDrawColor(1);  // White = draw
-    } else {
-        // Label
-        u8g2.drawFrame(x+5, y+7, 20, 12);
-    }
+    // Main body - solid black square
+    u8g2.drawBox(x, y, 28, 28);
     
-    // Metal shutter
-    u8g2.drawBox(x+7, y+23, 16, 4);
+    // Top label area - white rectangle
+    u8g2.setDrawColor(0);  // White (inverse)
+    u8g2.drawBox(x+4, y+3, 20, 7);
     
-    // Write protect notch
-    u8g2.drawBox(x+3, y+3, 4, 3);
+    // Metal shutter at bottom - white rectangle
+    u8g2.drawBox(x+6, y+21, 16, 5);
+    
+    // Center hub circle - white disc
+    u8g2.drawDisc(x+14, y+13, 4);
+    
+    // Inner hub detail - small black circle
+    u8g2.setDrawColor(1);  // Black
+    u8g2.drawCircle(x+14, y+13, 2);
+    
+    // Small shutter detail lines (horizontal lines in metal shutter)
+    u8g2.setDrawColor(1);  // Black
+    u8g2.drawLine(x+8, y+23, x+20, y+23);
+    
+    // Reset draw color
+    u8g2.setDrawColor(1);
 }
 
 void setup() {
@@ -226,17 +265,23 @@ void setup() {
         
         // Play configured startup sound (if set) or beep
         if(strlen(config.startupSound) > 0) {
-            String filepath = "/" + String(config.startupSound);
-            if(SPIFFS.exists(filepath)) {
-                Serial.println("Playing startup sound: " + String(config.startupSound));
-                playWavFileBlocking(filepath);
+            String filepath = String(config.startupSound);
+            if(SPIFFS.exists("/" + filepath)) {
+                Serial.println("Playing startup sound: " + filepath);
+                // Use playSound so it gets same delay logic as trigger
+                isBootSound = true;  // Mark as boot for correct delay
+                playSound(filepath);
             } else {
                 Serial.println("Startup sound not found, playing beep");
+                startFloppyAnimation(true);
                 testAudioAmplifier();
+                stopFloppyAnimation();
             }
         } else {
             // No startup sound configured, play beep
+            startFloppyAnimation(true);
             testAudioAmplifier();
+            stopFloppyAnimation();
         }
     } else {
         Serial.println("ERROR: Audio init failed!");
@@ -252,6 +297,15 @@ void setup() {
 void loop() {
     // Check trigger button
     checkTriggerButton();
+    
+    // Debug output every 5 seconds
+    static unsigned long lastDebug = 0;
+    unsigned long now = millis();
+    
+    if(now - lastDebug > 5000) {
+        Serial.printf("DEBUG: showFloppy=%d, floppyDisplayed=%d\n", showFloppy, floppyDisplayed);
+        lastDebug = now;
+    }
     
     // Yield to system
     delay(10);
@@ -478,7 +532,15 @@ void initWebServer() {
             html += "<option value='" + file + "'" + selected + ">" + file + "</option>";
         }
         
-        html += "</select><br>"
+        html += "</select><br><br>"
+            
+            "<label>Floppy Delay Boot Sound (ms): <span id='delayBootVal'>" + String(config.delayDiskBoot) + "</span></label>"
+            "<input type='range' name='delayDiskBoot' min='0' max='5000' step='100' value='" + String(config.delayDiskBoot) + "' "
+            "oninput=\"document.getElementById('delayBootVal').textContent=this.value\"><br>"
+            
+            "<label>Floppy Delay Trigger Sound (ms): <span id='delayTriggerVal'>" + String(config.delayDiskTrigger) + "</span></label>"
+            "<input type='range' name='delayDiskTrigger' min='0' max='5000' step='100' value='" + String(config.delayDiskTrigger) + "' "
+            "oninput=\"document.getElementById('delayTriggerVal').textContent=this.value\"><br><br>"
             
             "<button class='upload' type='submit'>💾 Save Config</button>"
             "</form>"
@@ -547,6 +609,12 @@ void initWebServer() {
         if(request->hasParam("triggerSound", true)) {
             String trigger = request->getParam("triggerSound", true)->value();
             strncpy(config.triggerSound, trigger.c_str(), sizeof(config.triggerSound) - 1);
+        }
+        if(request->hasParam("delayDiskBoot", true)) {
+            config.delayDiskBoot = request->getParam("delayDiskBoot", true)->value().toInt();
+        }
+        if(request->hasParam("delayDiskTrigger", true)) {
+            config.delayDiskTrigger = request->getParam("delayDiskTrigger", true)->value().toInt();
         }
         
         saveConfiguration();
@@ -645,6 +713,8 @@ void loadConfiguration() {
     preferences.getString("currentSound", config.currentSound, sizeof(config.currentSound));
     preferences.getString("startupSound", config.startupSound, sizeof(config.startupSound));
     preferences.getString("triggerSound", config.triggerSound, sizeof(config.triggerSound));
+    config.delayDiskBoot = preferences.getInt("delayDiskBoot", 0);
+    config.delayDiskTrigger = preferences.getInt("delayDiskTrigger", 0);
     
     preferences.end();
 }
@@ -661,6 +731,8 @@ void saveConfiguration() {
     preferences.putString("currentSound", config.currentSound);
     preferences.putString("startupSound", config.startupSound);
     preferences.putString("triggerSound", config.triggerSound);
+    preferences.putInt("delayDiskBoot", config.delayDiskBoot);
+    preferences.putInt("delayDiskTrigger", config.delayDiskTrigger);
     
     preferences.end();
 }
@@ -737,9 +809,15 @@ void playSound(const String& filename) {
     
     Serial.printf("Playing (blocking): %s\n", filename.c_str());
     
+    // Start floppy animation - use isBootSound if already set, otherwise trigger
+    startFloppyAnimation(isBootSound);
+    
     // Play directly (will block until done)
     String filepath = "/" + filename;
     playWavFileBlocking(filepath);
+    
+    // Stop floppy animation
+    stopFloppyAnimation();
     
     // Cleanup after playback
     audioSimulationActive = false;
@@ -885,12 +963,26 @@ void playWavFileBlocking(const String& filepath) {
         totalSamplesPlayed += samplesRead;
         
         // Yield to other tasks periodically AND feed watchdog
-        if(totalSamplesPlayed % 2048 == 0) {  // More frequent (every 2048 instead of 4096)
-            delay(5);  // Longer delay to give AsyncTCP time to run
-            yield();   // Extra yield for WiFi/Webserver
+        if(totalSamplesPlayed % 2048 == 0) {  // Every 2048 samples
+            delay(5);
+            yield();
             
             // CRITICAL: Reset watchdog timer to prevent abort
             esp_task_wdt_reset();
+            
+            // *** CHECK IF WE SHOULD SHOW FLOPPY (only once after delay) ***
+            if(showFloppy && !floppyDisplayed) {
+                unsigned long now = millis();
+                unsigned long delayTime = isBootSound ? config.delayDiskBoot : config.delayDiskTrigger;
+                
+                if((now - floppyAnimStart) >= delayTime) {
+                    // Show floppy now
+                    u8g2.clearBuffer();
+                    drawFloppyDisk(50, 18, false);
+                    u8g2.sendBuffer();
+                    floppyDisplayed = true;
+                }
+            }
             
             // Check heap status to prevent crashes
             if(ESP.getFreeHeap() < 10000) {
@@ -1061,7 +1153,9 @@ void checkTriggerButton() {
             }
             
             if(soundToPlay.length() > 0) {
+                // Don't call startFloppyAnimation here - playSound() will do it
                 playSound(soundToPlay);
+                // Don't call stopFloppyAnimation here - playSound() will do it
             }
         } else {
             addDebugLog("No sound files available");
