@@ -12,6 +12,7 @@
 #include <MFRC522.h>
 #include <driver/i2s.h>
 #include <math.h>
+#include <esp_task_wdt.h>  // For watchdog control
 
 // I2S Audio Output for MAX98357 amplifier
 // Using ESP32 hardware I2S for proper audio output
@@ -151,28 +152,54 @@ void scanSoundFiles();
 String getRandomSound();
 void playWavFileBlocking(const String& filepath);  // Direct WAV player (blocking)
 
+// Floppy disk icon drawing function - bigger and better positioned
+void drawFloppyDisk(int x, int y, bool filled) {
+    // Floppy disk: 30x30 pixels (bigger for better visibility)
+    // Main body
+    u8g2.drawFrame(x, y, 30, 30);
+    
+    if (filled) {
+        u8g2.drawBox(x+1, y+1, 28, 28);
+        // Label (inverted when filled)
+        u8g2.setDrawColor(0);  // Black = erase
+        u8g2.drawBox(x+5, y+7, 20, 12);
+        u8g2.setDrawColor(1);  // White = draw
+    } else {
+        // Label
+        u8g2.drawFrame(x+5, y+7, 20, 12);
+    }
+    
+    // Metal shutter
+    u8g2.drawBox(x+7, y+23, 16, 4);
+    
+    // Write protect notch
+    u8g2.drawBox(x+3, y+3, 4, 3);
+}
+
 void setup() {
     Serial.begin(115200);
-    delay(1000);
-    Serial.println("\n\n=== Floppy Audio Simulator v1.0 ===");
+    delay(100);
+    Serial.println("\n\n=== Floppy Disk Audio Simulator v1.0 ===");
     
-    // Initialize pins
-    pinMode(STATUS_LED, OUTPUT);
-    digitalWrite(STATUS_LED, HIGH);
+    // Display initialization
+    delay(100);
+    u8g2.begin();
+    u8g2.setDisplayRotation(U8G2_R0);
     
-    // Initialize button pin (pull-up, button connects to GND)
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
-    addDebugLog("Button pin initialized (GPIO " + String(BUTTON_PIN) + ")");
+    // Show floppy icon - PERMANENT, NO CLEARING
+    u8g2.clearBuffer();
+    drawFloppyDisk(48, 30, false);
+    u8g2.sendBuffer();
     
-    // Initialize SPIFFS - faster than LittleFS
+    Serial.println("Display initialized - Floppy shown");
+    
+    // Initialize SPIFFS filesystem
     Serial.println("Initializing SPIFFS...");
     if(!SPIFFS.begin(true)) {
         Serial.println("ERROR: SPIFFS Mount Failed!");
     } else {
         Serial.println("SPIFFS mounted successfully");
     }
-    
-    // Filesystem access simplified - no mutex needed
     
     // Load configuration
     Serial.println("Loading configuration...");
@@ -182,80 +209,55 @@ void setup() {
     Serial.println("Scanning for WAV files...");
     scanSoundFiles();
     
-    // Initialize WiFi
+    // WiFi initialization
     Serial.println("Initializing WiFi...");
     initWiFi();
     
-    // Initialize Web server
+    // Webserver initialization
     Serial.println("Initializing web server...");
     initWebServer();
     
-    // Initialize Audio directly (like it worked before)
+    // Audio initialization
     Serial.println("Initializing audio...");
-    addDebugLog("Initializing audio hardware...");
     initAudio();
     
     if(audioHardwareInitialized) {
-        addDebugLog("Audio initialized successfully!");
+        Serial.println("Audio initialized successfully!");
         
-        // Play configured startup sound or default beep
-        if(strlen(config.startupSound) > 0 && soundFiles.size() > 0) {
-            // Check if configured startup sound exists
-            bool soundExists = false;
-            for(const String& file : soundFiles) {
-                if(file == String(config.startupSound)) {
-                    soundExists = true;
-                    break;
-                }
-            }
-            if(soundExists) {
-                addDebugLog("Playing startup sound: " + String(config.startupSound));
-                playSound(String(config.startupSound));
+        // Play configured startup sound (if set) or beep
+        if(strlen(config.startupSound) > 0) {
+            String filepath = "/" + String(config.startupSound);
+            if(SPIFFS.exists(filepath)) {
+                Serial.println("Playing startup sound: " + String(config.startupSound));
+                playWavFileBlocking(filepath);
             } else {
-                addDebugLog("Startup sound not found, playing beep");
+                Serial.println("Startup sound not found, playing beep");
                 testAudioAmplifier();
             }
         } else {
-            Serial.println("Playing startup beep...");
-            addDebugLog("Playing startup beep (no custom sound configured)");
+            // No startup sound configured, play beep
             testAudioAmplifier();
         }
-        addDebugLog("Startup audio complete");
     } else {
-        addDebugLog("ERROR: Audio init failed!");
+        Serial.println("ERROR: Audio init failed!");
     }
     
-    addDebugLog("System ready!");
+    // Setup button pin with internal pull-up
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    Serial.println("Button pin initialized: GPIO " + String(BUTTON_PIN));
+    
     Serial.println("=== READY ===");
-    digitalWrite(STATUS_LED, LOW);
 }
 
 void loop() {
-    // Check button for trigger sound
+    // Check trigger button
     checkTriggerButton();
     
-    // WiFi stability monitoring every 30 seconds
-    static unsigned long lastWiFiCheck = 0;
-    if (millis() - lastWiFiCheck > 30000) {
-        lastWiFiCheck = millis();
-        
-        // Log WiFi status for debugging
-        uint8_t clients = WiFi.softAPgetStationNum();
-        if (clients > 0) {
-            addDebugLog("WiFi: " + String(clients) + " client(s) connected");
-        }
-        
-        // Memory check
-        uint32_t freeHeap = ESP.getFreeHeap();
-        if (freeHeap < 10000) {  // Less than 10KB free
-            addDebugLog("WARNING: Low memory: " + String(freeHeap) + " bytes");
-        }
-    }
-    
-    // Yield to WiFi stack and watchdog
-    yield();
-    delay(10);  // Optimized for button responsiveness and WiFi stability
+    // Yield to system
+    delay(10);
 }
+
+// ===== REST OF THE FILE - ALL FUNCTIONS REMAIN FOR COMPILATION =====
 
 void initDisplay() {
     Serial.println("Starting 0.42 inch OLED with U8G2...");
@@ -573,28 +575,44 @@ void initWebServer() {
         request->redirect("/");
     });
 
-    // Play specific file endpoint
+    // Play specific file endpoint - CRITICAL: respond immediately, play asynchronously
     server.on("/playfile", HTTP_POST, [](AsyncWebServerRequest *request){
+        String fileToPlay = "";
         if(request->hasParam("file", true)) {
-            String filename = request->getParam("file", true)->value();
-            playSound(filename);
+            fileToPlay = request->getParam("file", true)->value();
         }
-        request->redirect("/");
+        
+        // Send response IMMEDIATELY
+        request->send(200, "text/html", 
+            "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+            "<meta http-equiv='refresh' content='1;url=/'>"
+            "<title>Playing...</title></head><body>"
+            "<h2>▶ Playing: " + fileToPlay + "</h2>"
+            "<p>Redirecting...</p>"
+            "</body></html>");
+        
+        // NOW play the sound (after response sent)
+        if(fileToPlay.length() > 0) {
+            // Small delay to ensure response is sent
+            delay(50);
+            playSound(fileToPlay);
+        }
     });
     
-    // File upload handler with better error handling
-    server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request){
-        // This response is sent after the upload handler completes
-        String response = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Upload Result</title></head><body>";
-        response += "<h2>Upload Complete</h2>";
-        response += "<p>File uploaded successfully!</p>";
-        response += "<script>setTimeout(function(){window.location.href='/';}, 2000);</script>";
-        response += "</body></html>";
-        request->send(200, "text/html", response);
-    }, handleFileUpload);
-    
-    // Configure server for stability
-    server.onFileUpload(handleFileUpload);
+    // File upload handler - IMPORTANT: respond immediately to avoid timeout
+    server.on("/upload", HTTP_POST, 
+        [](AsyncWebServerRequest *request) {
+            // Send response immediately to avoid timeout
+            request->send(200, "text/html", 
+                "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+                "<meta http-equiv='refresh' content='2;url=/'>"
+                "<title>Upload Complete</title></head><body>"
+                "<h2>✓ Upload Complete</h2>"
+                "<p>File uploaded successfully! Redirecting...</p>"
+                "</body></html>");
+        }, 
+        handleFileUpload
+    );
     
     // Add connection monitoring
     server.on("/ping", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -815,24 +833,29 @@ void playWavFileBlocking(const String& filepath) {
         // Restart I2S
         i2s_start(I2S_NUM_0);
         
-        vTaskDelay(pdMS_TO_TICKS(100));  // Let I2S stabilize with new rate
+        delay(100);  // Let I2S stabilize with new rate
     }
     
     // Enable audio amplifier
     digitalWrite(I2S_SD, HIGH);
-    vTaskDelay(pdMS_TO_TICKS(50));  // Let amplifier stabilize
+    delay(50);  // Let amplifier stabilize
     
     // Read and play audio data in chunks
-    const size_t CHUNK_SIZE = 512;  // 512 samples = 1024 bytes
+    // REDUCED buffer size to avoid heap fragmentation and OOM crashes
+    const size_t CHUNK_SIZE = 256;  // 256 samples = 512 bytes (reduced from 512)
     int16_t* buffer = (int16_t*)malloc(CHUNK_SIZE * sizeof(int16_t));
     
     if(!buffer) {
         Serial.println("Failed to allocate audio buffer");
+        addDebugLog("ERROR: Out of memory for audio buffer!");
         file.close();
         digitalWrite(I2S_SD, LOW);
         isPlayingAudio = false;
         return;
     }
+    
+    Serial.printf("Audio buffer allocated: %d bytes (free heap: %d)\n", 
+                  CHUNK_SIZE * sizeof(int16_t), ESP.getFreeHeap());
     
     size_t totalSamplesPlayed = 0;
     size_t bytesRead;
@@ -861,14 +884,26 @@ void playWavFileBlocking(const String& filepath) {
         
         totalSamplesPlayed += samplesRead;
         
-        // Yield to other tasks periodically
-        if(totalSamplesPlayed % 4096 == 0) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+        // Yield to other tasks periodically AND feed watchdog
+        if(totalSamplesPlayed % 2048 == 0) {  // More frequent (every 2048 instead of 4096)
+            delay(5);  // Longer delay to give AsyncTCP time to run
+            yield();   // Extra yield for WiFi/Webserver
+            
+            // CRITICAL: Reset watchdog timer to prevent abort
+            esp_task_wdt_reset();
+            
+            // Check heap status to prevent crashes
+            if(ESP.getFreeHeap() < 10000) {
+                Serial.println("WARNING: Low heap during playback: " + String(ESP.getFreeHeap()));
+            }
         }
     }
     
     free(buffer);
     file.close();
+    
+    Serial.printf("Playback complete: %d samples, free heap: %d bytes\n", 
+                  totalSamplesPlayed, ESP.getFreeHeap());
     
     // Cleanup after audio playback
     isPlayingAudio = false;
@@ -1041,39 +1076,40 @@ void handleFileUpload(AsyncWebServerRequest *request, String filename, size_t in
     static String currentUploadFile;
     
     if(!index) {
-        addDebugLog("Upload start: " + filename);
+        // Start of upload
+        Serial.println("Upload start: " + filename);
         currentUploadFile = filename;
         
-        // Simple filesystem access
+        // Open file for writing
         String filepath = "/" + filename;
         uploadFile = SPIFFS.open(filepath, "w");
         if(!uploadFile) {
-            addDebugLog("ERROR: Failed to open file for writing: " + filepath);
+            Serial.println("ERROR: Failed to open file for writing: " + filepath);
             return;
         }
-        addDebugLog("File opened for upload: " + filepath);
+        Serial.println("File opened: " + filepath);
     }
     
+    // Write data chunk
     if(uploadFile && len > 0) {
         size_t written = uploadFile.write(data, len);
         if(written != len) {
-            addDebugLog("WARNING: Write incomplete " + String(written) + "/" + String(len));
+            Serial.println("WARNING: Write incomplete " + String(written) + "/" + String(len));
         }
+        yield(); // Give system time to breathe
     }
     
     if(final) {
+        // End of upload
         if(uploadFile) {
-            uploadFile.flush(); // Ensure data is written
             uploadFile.close();
+            Serial.println("Upload complete: " + currentUploadFile + " (" + String(index + len) + " bytes)");
             
-            addDebugLog("Upload complete: " + currentUploadFile + " (" + String(index + len) + " bytes)");
-            
-            // Invalidate cache and refresh after upload
+            // Quick refresh of file list
             fileCacheValid = false;
-            delay(50); // Reduced delay
-            scanSoundFiles(); // Refresh file list
+            scanSoundFiles();
         } else {
-            addDebugLog("ERROR: Upload file was null on final");
+            Serial.println("ERROR: Upload file was null on final");
         }
         currentUploadFile = "";
     }
