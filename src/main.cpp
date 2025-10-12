@@ -8,8 +8,6 @@
 #include <Preferences.h>
 #include <U8g2lib.h>
 #include <Wire.h>
-#include <SPI.h>
-#include <MFRC522.h>
 #include <driver/i2s.h>
 #include <math.h>
 #include <esp_task_wdt.h>  // For watchdog control
@@ -44,19 +42,12 @@
 #define OLED_OFFSET_X 28  // From Amazon specs
 #define OLED_OFFSET_Y 24  // From Amazon specs
 
-// NFC pins for PN532 - adjusted for available pins
-#define NFC_RST 2    // Available GPIO
-#define NFC_CS 10    // Available GPIO
-
 // Control pins - updated after audio pin reassignment
 #define TRIGGER_PIN 9    // Available GPIO
 #define STATUS_LED 8     // Onboard LED
 
 // Display object - WORKING U8G2 configuration for diymore ESP32-C3 Super Mini
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
-
-// NFC Reader
-MFRC522 nfc(NFC_CS, NFC_RST);
 
 // Web server
 AsyncWebServer server(80);
@@ -91,13 +82,13 @@ struct Config {
     char password[32] = "";
     int volume = 50;
     bool randomPlay = true;
-    bool nfcEnabled = true;
     char currentSound[64] = "default.wav";
     char startupSound[64] = "";  // Startup sound (empty = no sound)
     char triggerSound[64] = "";  // Button trigger sound (empty = random)
     bool highGain = false;  // false = 9dB, true = 15dB
     int delayDiskBoot = 0;      // Delay in ms before floppy animation starts for boot sound
     int delayDiskTrigger = 0;   // Delay in ms before floppy animation starts for trigger sound
+    bool debugOutput = true;    // Enable/disable serial debug output
 } config;
 
 // Animation variables for random floppy blinking
@@ -124,13 +115,13 @@ std::vector<String> soundFiles;
 String debugLog = "";
 void addDebugLog(const String& msg) {
     debugLog += "[" + String(millis()/1000) + "s] " + msg + "<br>";
-    // Keep only last 20 lines
+    // Keep only last 30 lines
     int lineCount = 0;
     int lastBr = debugLog.length();
     for(int i = debugLog.length() - 1; i >= 0; i--) {
         if(debugLog[i] == '>') {  // End of <br>
             lineCount++;
-            if(lineCount > 20) {
+            if(lineCount > 30) {
                 debugLog = debugLog.substring(i + 1);
                 break;
             }
@@ -138,10 +129,40 @@ void addDebugLog(const String& msg) {
     }
 }
 
+// Combined debug function - Serial + Web Log
+void debugPrint(const String& msg) {
+    if(config.debugOutput) {
+        Serial.print(msg);
+    }
+    // Always add to web log (for web monitoring)
+    addDebugLog(msg);
+}
+
+void debugPrintln(const String& msg) {
+    if(config.debugOutput) {
+        Serial.println(msg);
+    }
+    // Always add to web log (for web monitoring)
+    addDebugLog(msg);
+}
+
+void debugPrintf(const char* format, ...) {
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    
+    if(config.debugOutput) {
+        Serial.print(buffer);
+    }
+    // Always add to web log (for web monitoring)
+    addDebugLog(String(buffer));
+}
+
 // Function declarations
 void initDisplay();
 void initAudio();
-void initNFC();
 void initWiFi();
 void initWebServer();
 void loadConfiguration();
@@ -153,7 +174,6 @@ void playSound(const String& filename);
 void stopSound();
 void setGain(bool highGain);
 void testAudioAmplifier();
-void checkNFC();
 void checkTriggerButton();
 void handleFileUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
 void scanSoundFiles();
@@ -167,12 +187,12 @@ void startFloppyAnimation(bool isBoot) {
     floppyAnimStart = millis();
     floppyDisplayed = false;  // Reset - will be set to true after delay
     
-    Serial.printf("Floppy animation started (boot=%d, delay=%dms)\n", isBoot, isBoot ? config.delayDiskBoot : config.delayDiskTrigger);
+    debugPrintf("Floppy animation started (boot=%d, delay=%dms)\n", isBoot, isBoot ? config.delayDiskBoot : config.delayDiskTrigger);
 }
 
 // Stop floppy animation
 void stopFloppyAnimation() {
-    Serial.printf(">>> STOPPING ANIMATION: showFloppy WAS %d\n", showFloppy);
+    debugPrintf(">>> STOPPING ANIMATION: showFloppy WAS %d\n", showFloppy);
     showFloppy = false;
     floppyAnimStart = 0;
     floppyFilled = false;
@@ -183,7 +203,7 @@ void stopFloppyAnimation() {
     u8g2.clearBuffer();
     u8g2.sendBuffer();
     
-    Serial.println("Floppy animation stopped - display cleared");
+    debugPrintln("Floppy animation stopped - display cleared");
 }
 
 // Floppy disk icon drawing function - EXACT silhouette from reference image
@@ -218,62 +238,61 @@ void drawFloppyDisk(int x, int y, bool filled) {
 void setup() {
     Serial.begin(115200);
     delay(100);
-    Serial.println("\n\n=== Floppy Disk Audio Simulator v1.0 ===");
+    debugPrintln("\n\n=== Floppy Disk Audio Simulator v1.0 ===");
     
     // Display initialization
     delay(100);
     u8g2.begin();
     u8g2.setDisplayRotation(U8G2_R0);
     
-    // Show floppy icon - PERMANENT, NO CLEARING
+    // Clear display - completely blank on startup
     u8g2.clearBuffer();
-    drawFloppyDisk(48, 30, false);
     u8g2.sendBuffer();
     
-    Serial.println("Display initialized - Floppy shown");
+    debugPrintln("Display initialized - blank screen");
     
     // Initialize SPIFFS filesystem
-    Serial.println("Initializing SPIFFS...");
+    debugPrintln("Initializing SPIFFS...");
     if(!SPIFFS.begin(true)) {
-        Serial.println("ERROR: SPIFFS Mount Failed!");
+        debugPrintln("ERROR: SPIFFS Mount Failed!");
     } else {
-        Serial.println("SPIFFS mounted successfully");
+        debugPrintln("SPIFFS mounted successfully");
     }
     
     // Load configuration
-    Serial.println("Loading configuration...");
+    debugPrintln("Loading configuration...");
     loadConfiguration();
     
     // Scan for WAV files
-    Serial.println("Scanning for WAV files...");
+    debugPrintln("Scanning for WAV files...");
     scanSoundFiles();
     
     // WiFi initialization
-    Serial.println("Initializing WiFi...");
+    debugPrintln("Initializing WiFi...");
     initWiFi();
     
     // Webserver initialization
-    Serial.println("Initializing web server...");
+    debugPrintln("Initializing web server...");
     initWebServer();
     
     // Audio initialization
-    Serial.println("Initializing audio...");
+    debugPrintln("Initializing audio...");
     initAudio();
     
     if(audioHardwareInitialized) {
-        Serial.println("Audio initialized successfully!");
+        debugPrintln("Audio initialized successfully!");
         
         // Play configured startup sound (if set) or beep
         if(strlen(config.startupSound) > 0) {
             String filepath = String(config.startupSound);
             if(SPIFFS.exists("/" + filepath)) {
-                Serial.println("Playing startup sound: " + filepath);
+                debugPrintln("Playing startup sound: " + filepath);
                 // Start boot animation directly with correct flag
                 startFloppyAnimation(true);
                 playWavFileBlocking("/" + filepath);
                 stopFloppyAnimation();
             } else {
-                Serial.println("Startup sound not found, playing beep");
+                debugPrintln("Startup sound not found, playing beep");
                 startFloppyAnimation(true);
                 testAudioAmplifier();
                 stopFloppyAnimation();
@@ -285,14 +304,19 @@ void setup() {
             stopFloppyAnimation();
         }
     } else {
-        Serial.println("ERROR: Audio init failed!");
+        debugPrintln("ERROR: Audio init failed!");
     }
     
     // Setup button pin with internal pull-up
     pinMode(BUTTON_PIN, INPUT_PULLUP);
-    Serial.println("Button pin initialized: GPIO " + String(BUTTON_PIN));
+    debugPrintln("Button pin initialized: GPIO " + String(BUTTON_PIN));
     
-    Serial.println("=== READY ===");
+    // Clear display for clean state - floppy will only show during playback
+    u8g2.clearBuffer();
+    u8g2.sendBuffer();
+    debugPrintln("Display cleared - ready for floppy animation");
+    
+    debugPrintln("=== READY ===");
 }
 
 void loop() {
@@ -304,7 +328,7 @@ void loop() {
     unsigned long now = millis();
     
     if(now - lastDebug > 5000) {
-        Serial.printf("DEBUG: showFloppy=%d, floppyDisplayed=%d\n", showFloppy, floppyDisplayed);
+        debugPrintf("DEBUG: showFloppy=%d, floppyDisplayed=%d\n", showFloppy, floppyDisplayed);
         lastDebug = now;
     }
     
@@ -315,12 +339,12 @@ void loop() {
 // ===== REST OF THE FILE - ALL FUNCTIONS REMAIN FOR COMPILATION =====
 
 void initDisplay() {
-    Serial.println("Starting 0.42 inch OLED with U8G2...");
-    Serial.printf("Pins: SCL=%d, SDA=%d, Offsets: X=%d, Y=%d\n", OLED_SCL, OLED_SDA, OLED_OFFSET_X, OLED_OFFSET_Y);
+    debugPrintln("Starting 0.42 inch OLED with U8G2...");
+    debugPrintf("Pins: SCL=%d, SDA=%d, Offsets: X=%d, Y=%d\n", OLED_SCL, OLED_SDA, OLED_OFFSET_X, OLED_OFFSET_Y);
     
     // Initialize U8G2 display - this handles I2C automatically
     u8g2.begin();
-    Serial.println("U8G2 display initialized successfully!");
+    debugPrintln("U8G2 display initialized successfully!");
     
     // Show startup message with proper offsets
     u8g2.clearBuffer();
@@ -330,11 +354,11 @@ void initDisplay() {
     u8g2.drawStr(OLED_OFFSET_X, OLED_OFFSET_Y + 28, "Starting...");
     
     u8g2.sendBuffer();
-    Serial.println("Startup message displayed");
+    debugPrintln("Startup message displayed");
     
     // Removed 2 second delay for faster startup
     
-    Serial.println("Display initialization complete");
+    debugPrintln("Display initialization complete");
 }
 
 void initAudio() {
@@ -348,7 +372,7 @@ void initAudio() {
     
     addDebugLog("Installing I2S driver...");
     // Setup I2S for MAX98357 amplifier
-    Serial.println("Initializing I2S audio output for MAX98357...");
+    debugPrintln("Initializing I2S audio output for MAX98357...");
     
     // I2S configuration - Stereo for MAX98357 compatibility
     i2s_config_t i2s_config = {
@@ -377,7 +401,7 @@ void initAudio() {
     esp_err_t result = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
     if (result != ESP_OK) {
         addDebugLog("I2S install FAILED: " + String(result));
-        Serial.printf("I2S driver install FAILED: %d\n", result);
+        debugPrintf("I2S driver install FAILED: %d\n", result);
         return;
     }
     addDebugLog("I2S driver installed OK");
@@ -385,7 +409,7 @@ void initAudio() {
     result = i2s_set_pin(I2S_NUM_0, &pin_config);
     if (result != ESP_OK) {
         addDebugLog("I2S pin setup FAILED: " + String(result));
-        Serial.printf("I2S pin setup FAILED: %d\n", result);
+        debugPrintf("I2S pin setup FAILED: %d\n", result);
         return;
     }
     addDebugLog("I2S pins configured OK");
@@ -399,30 +423,14 @@ void initAudio() {
     addDebugLog("Amplifier enabled");
     
     // Minimal logging for faster boot
-    Serial.println("I2S Audio ready - AMPLIFIER ENABLED");
+    debugPrintln("I2S Audio ready - AMPLIFIER ENABLED");
     
     // SIMPLIFIED: No mutex, no task - direct blocking playback
-    Serial.println("Using direct blocking playback");
-}
-
-void initNFC() {
-    SPI.begin();
-    nfc.PCD_Init();
-    
-    // Check if NFC reader is connected
-    byte version = nfc.PCD_ReadRegister(nfc.VersionReg);
-    if(version == 0x00 || version == 0xFF) {
-        Serial.println("NFC reader not found - disabling NFC features");
-        config.nfcEnabled = false;
-        return;
-    }
-    
-    Serial.print("NFC reader found, version: 0x");
-    Serial.println(version, HEX);
+    debugPrintln("Using direct blocking playback");
 }
 
 void initWiFi() {
-    Serial.println("Starting WiFi in AP mode...");
+    debugPrintln("Starting WiFi in AP mode...");
     
     // Set WiFi to AP-only mode for fastest startup
     WiFi.mode(WIFI_AP);
@@ -458,14 +466,14 @@ void initWiFi() {
         addDebugLog("AP IP: " + IP.toString() + " on channel " + String(channel));
         addDebugLog("Power: 5dBm, Max connections: 4");
         
-        Serial.print("AP started! SSID: ");
-        Serial.println(config.ssid);
-        Serial.print("AP IP: ");
-        Serial.println(IP);
-        Serial.println("WiFi optimized for close-range stability");
+        debugPrint("AP started! SSID: ");
+        debugPrintln(config.ssid);
+        debugPrint("AP IP: ");
+        debugPrintln(IP.toString());
+        debugPrintln("WiFi optimized for close-range stability");
     } else {
         addDebugLog("ERROR: Failed to start AP!");
-        Serial.println("ERROR: Failed to start AP!");
+        debugPrintln("ERROR: Failed to start AP!");
     }
 }
 
@@ -536,12 +544,18 @@ void initWebServer() {
         html += "</select><br><br>"
             
             "<label>Floppy Delay Boot Sound (ms): <span id='delayBootVal'>" + String(config.delayDiskBoot) + "</span></label>"
-            "<input type='range' name='delayDiskBoot' min='0' max='5000' step='100' value='" + String(config.delayDiskBoot) + "' "
+            "<input type='range' name='delayDiskBoot' min='0' max='10000' step='100' value='" + String(config.delayDiskBoot) + "' "
             "oninput=\"document.getElementById('delayBootVal').textContent=this.value\"><br>"
             
             "<label>Floppy Delay Trigger Sound (ms): <span id='delayTriggerVal'>" + String(config.delayDiskTrigger) + "</span></label>"
-            "<input type='range' name='delayDiskTrigger' min='0' max='5000' step='100' value='" + String(config.delayDiskTrigger) + "' "
+            "<input type='range' name='delayDiskTrigger' min='0' max='10000' step='100' value='" + String(config.delayDiskTrigger) + "' "
             "oninput=\"document.getElementById('delayTriggerVal').textContent=this.value\"><br><br>"
+            
+            "<label>Debug Output:</label>"
+            "<select name='debugOutput'>"
+            "<option value='1'" + String(config.debugOutput ? " selected" : "") + ">Enabled</option>"
+            "<option value='0'" + String(config.debugOutput ? "" : " selected") + ">Disabled</option>"
+            "</select><br><br>"
             
             "<button class='upload' type='submit'>💾 Save Config</button>"
             "</form>"
@@ -616,6 +630,9 @@ void initWebServer() {
         }
         if(request->hasParam("delayDiskTrigger", true)) {
             config.delayDiskTrigger = request->getParam("delayDiskTrigger", true)->value().toInt();
+        }
+        if(request->hasParam("debugOutput", true)) {
+            config.debugOutput = request->getParam("debugOutput", true)->value().toInt() == 1;
         }
         
         saveConfiguration();
@@ -699,7 +716,7 @@ void initWebServer() {
     
     server.begin();
     addDebugLog("Web server started with stability optimizations");
-    Serial.println("Web server started with connection monitoring");
+    debugPrintln("Web server started with connection monitoring");
 }
 
 void loadConfiguration() {
@@ -709,15 +726,22 @@ void loadConfiguration() {
     preferences.getString("password", config.password, sizeof(config.password));
     config.volume = preferences.getInt("volume", 50);
     config.randomPlay = preferences.getBool("randomPlay", true);
-    config.nfcEnabled = preferences.getBool("nfcEnabled", true);
+
     config.highGain = preferences.getBool("highGain", false);
     preferences.getString("currentSound", config.currentSound, sizeof(config.currentSound));
     preferences.getString("startupSound", config.startupSound, sizeof(config.startupSound));
     preferences.getString("triggerSound", config.triggerSound, sizeof(config.triggerSound));
-    config.delayDiskBoot = preferences.getInt("delayDiskBoot", 0);
-    config.delayDiskTrigger = preferences.getInt("delayDiskTrigger", 0);
+    config.delayDiskBoot = preferences.getInt("delayBoot", 0);
+    config.delayDiskTrigger = preferences.getInt("delayTrigger", 0);
+    config.debugOutput = preferences.getBool("debugOutput", true);
     
     preferences.end();
+    
+    // Debug-Ausgabe der geladenen Delay-Werte
+    debugPrint("Loaded delayDiskBoot: ");
+    debugPrintln(String(config.delayDiskBoot));
+    debugPrint("Loaded delayDiskTrigger: ");
+    debugPrintln(String(config.delayDiskTrigger));
 }
 
 void saveConfiguration() {
@@ -727,13 +751,14 @@ void saveConfiguration() {
     preferences.putString("password", config.password);
     preferences.putInt("volume", config.volume);
     preferences.putBool("randomPlay", config.randomPlay);
-    preferences.putBool("nfcEnabled", config.nfcEnabled);
+
     preferences.putBool("highGain", config.highGain);
     preferences.putString("currentSound", config.currentSound);
     preferences.putString("startupSound", config.startupSound);
     preferences.putString("triggerSound", config.triggerSound);
-    preferences.putInt("delayDiskBoot", config.delayDiskBoot);
-    preferences.putInt("delayDiskTrigger", config.delayDiskTrigger);
+    preferences.putInt("delayBoot", config.delayDiskBoot);
+    preferences.putInt("delayTrigger", config.delayDiskTrigger);
+    preferences.putBool("debugOutput", config.debugOutput);
     
     preferences.end();
 }
@@ -786,12 +811,12 @@ void playSound(const String& filename) {
     // Check if audio is ready
     if (!audioHardwareInitialized) {
         addDebugLog("ERROR: Audio not initialized!");
-        Serial.println("ERROR: Audio hardware not initialized!");
+        debugPrintln("ERROR: Audio hardware not initialized!");
         return;
     }
     
     addDebugLog("Playing: " + filename);
-    Serial.println("Audio hardware is ready, starting playback...");
+    debugPrintln("Audio hardware is ready, starting playback...");
     
     // Amplifier should already be enabled from initAudio()
     // But ensure it's on and set gain
@@ -808,7 +833,7 @@ void playSound(const String& filename) {
     isPlaying = true;
     playStartTime = millis();
     
-    Serial.printf("Playing (blocking): %s\n", filename.c_str());
+    debugPrintf("Playing (blocking): %s\n", filename.c_str());
     
     // Start floppy animation - trigger sounds always use trigger delay
     startFloppyAnimation(false);
@@ -824,7 +849,7 @@ void playSound(const String& filename) {
     audioSimulationActive = false;
     isPlaying = false;
     currentAudioFile = "";
-    Serial.println("Playback finished");
+    debugPrintln("Playback finished");
 }
 
 // Direct WAV file player (blocking - will freeze UI during playback)
@@ -847,7 +872,7 @@ void playWavFileBlocking(const String& filepath) {
     }
     
     size_t fileSize = file.size();
-    Serial.printf("Playing WAV file: %s (%d bytes)\n", filepath.c_str(), fileSize);
+    debugPrintf("Playing WAV file: %s (%d bytes)\n", filepath.c_str(), fileSize);
     
     // Read WAV header (44 bytes for standard WAV)
     uint8_t header[44];
@@ -925,7 +950,7 @@ void playWavFileBlocking(const String& filepath) {
     int16_t* buffer = (int16_t*)malloc(CHUNK_SIZE * sizeof(int16_t));
     
     if(!buffer) {
-        Serial.println("Failed to allocate audio buffer");
+        debugPrintln("Failed to allocate audio buffer");
         addDebugLog("ERROR: Out of memory for audio buffer!");
         file.close();
         digitalWrite(I2S_SD, LOW);
@@ -933,7 +958,7 @@ void playWavFileBlocking(const String& filepath) {
         return;
     }
     
-    Serial.printf("Audio buffer allocated: %d bytes (free heap: %d)\n", 
+    debugPrintf("Audio buffer allocated: %d bytes (free heap: %d)\n", 
                   CHUNK_SIZE * sizeof(int16_t), ESP.getFreeHeap());
     
     size_t totalSamplesPlayed = 0;
@@ -942,7 +967,7 @@ void playWavFileBlocking(const String& filepath) {
     while((bytesRead = file.read((uint8_t*)buffer, CHUNK_SIZE * sizeof(int16_t))) > 0) {
         // Check for stop request
         if(audioStopRequested) {
-            Serial.println("Playback stopped by user");
+            debugPrintln("Playback stopped by user");
             break;
         }
         
@@ -976,21 +1001,21 @@ void playWavFileBlocking(const String& filepath) {
                 unsigned long now = millis();
                 unsigned long delayTime = isBootSound ? config.delayDiskBoot : config.delayDiskTrigger;
                 
-                Serial.printf("DELAY CHECK: isBoot=%d, delayTime=%lu, elapsed=%lu\n", isBootSound, delayTime, now - floppyAnimStart);
+                debugPrintf("DELAY CHECK: isBoot=%d, delayTime=%lu, elapsed=%lu\n", isBootSound, delayTime, now - floppyAnimStart);
                 
                 if((now - floppyAnimStart) >= delayTime) {
                     // Show floppy now
                     u8g2.clearBuffer();
-                    drawFloppyDisk(50, 18, false);
+                    drawFloppyDisk(50, 35, false);
                     u8g2.sendBuffer();
                     floppyDisplayed = true;
-                    Serial.printf(">>> FLOPPY DISPLAYED (isBoot=%d, delay=%lu)\n", isBootSound, delayTime);
+                    debugPrintf(">>> FLOPPY DISPLAYED (isBoot=%d, delay=%lu)\n", isBootSound, delayTime);
                 }
             }
             
             // Check heap status to prevent crashes
             if(ESP.getFreeHeap() < 10000) {
-                Serial.println("WARNING: Low heap during playback: " + String(ESP.getFreeHeap()));
+                debugPrintln("WARNING: Low heap during playback: " + String(ESP.getFreeHeap()));
             }
         }
     }
@@ -998,7 +1023,7 @@ void playWavFileBlocking(const String& filepath) {
     free(buffer);
     file.close();
     
-    Serial.printf("Playback complete: %d samples, free heap: %d bytes\n", 
+    debugPrintf("Playback complete: %d samples, free heap: %d bytes\n", 
                   totalSamplesPlayed, ESP.getFreeHeap());
     
     // Cleanup after audio playback
@@ -1010,7 +1035,7 @@ void playWavFileBlocking(const String& filepath) {
     // Disable amplifier to save power
     digitalWrite(I2S_SD, LOW);
     
-    Serial.printf("WAV playback complete - played %d samples (filesystem unlocked)\n", totalSamplesPlayed);
+    debugPrintf("WAV playback complete - played %d samples (filesystem unlocked)\n", totalSamplesPlayed);
 }
 
 void stopSound() {
@@ -1021,27 +1046,27 @@ void stopSound() {
     currentAudioFile = "";
     strcpy(config.currentSound, "");
     
-    Serial.println("Audio stop requested");
+    debugPrintln("Audio stop requested");
 }
 
 void testAudioAmplifier() {
     addDebugLog("=== STARTUP BEEP (3kHz, 10% vol) ===");
-    Serial.println("=== STARTUP BEEP (3000 Hz, 10% volume) ===");
+    debugPrintln("=== STARTUP BEEP (3000 Hz, 10% volume) ===");
     
     if (!audioHardwareInitialized) {
         addDebugLog("ERROR: Audio hardware not ready!");
-        Serial.println("Error: Audio hardware not initialized!");
+        debugPrintln("Error: Audio hardware not initialized!");
         return;
     }
     
     // Enable amplifier
     addDebugLog("Enabling amp + low gain...");
-    Serial.println("Enabling amplifier (I2S_SD = HIGH)...");
+    debugPrintln("Enabling amplifier (I2S_SD = HIGH)...");
     digitalWrite(I2S_SD, HIGH);
     digitalWrite(I2S_GAIN, LOW);  // Low gain for startup beep
     delay(100); // Let amplifier stabilize
     addDebugLog("Amp ready, generating sine wave...");
-    Serial.println("Amplifier enabled, generating beep...");
+    debugPrintln("Amplifier enabled, generating beep...");
     
     // Generate 1kHz beep (500ms, 10% volume) - longer and lower for easier hearing
     int sampleCount = I2S_SAMPLE_RATE * 50 / 100;  // 0.5 seconds
@@ -1049,12 +1074,12 @@ void testAudioAmplifier() {
     
     if (!samples) {
         addDebugLog("ERROR: Buffer allocation failed!");
-        Serial.println("ERROR: Failed to allocate audio buffer!");
+        debugPrintln("ERROR: Failed to allocate audio buffer!");
         return;
     }
     
     addDebugLog("Allocated " + String(sampleCount) + " samples");
-    Serial.printf("Generating %d samples...\n", sampleCount);
+    debugPrintf("Generating %d samples...\n", sampleCount);
     
     float phaseIncrement = 2.0 * PI * 1000 / I2S_SAMPLE_RATE;  // 1kHz (lower frequency)
     float phase = 0.0;
@@ -1078,49 +1103,28 @@ void testAudioAmplifier() {
     
     // Play via I2S
     addDebugLog("Writing " + String(sampleCount) + " samples to I2S...");
-    Serial.println("Writing to I2S...");
+    debugPrintln("Writing to I2S...");
     size_t bytesWritten;
     esp_err_t result = i2s_write(I2S_NUM_0, samples, sampleCount * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
     addDebugLog("I2S result: " + String(result) + ", wrote: " + String(bytesWritten) + " bytes");
-    Serial.printf("I2S write result: %d, bytes written: %d\n", result, bytesWritten);
+    debugPrintf("I2S write result: %d, bytes written: %d\n", result, bytesWritten);
     
     free(samples);
     
     // Keep amplifier enabled for future playback
     addDebugLog("Startup beep completed!");
-    Serial.println("Startup beep complete - audio system ready!");
+    debugPrintln("Startup beep complete - audio system ready!");
 }
 
 void setGain(bool highGain) {
     config.highGain = highGain;
     digitalWrite(I2S_GAIN, highGain ? HIGH : LOW);
-    Serial.printf("Audio gain set to %s (%ddB)\n", 
+    debugPrintf("Audio gain set to %s (%ddB)\n", 
                   highGain ? "HIGH" : "LOW", 
                   highGain ? 15 : 9);
     saveConfiguration();  // Save to preferences
 }
 
-void checkNFC() {
-    if(!nfc.PICC_IsNewCardPresent() || !nfc.PICC_ReadCardSerial()) {
-        return;
-    }
-    
-    Serial.print("NFC card detected: ");
-    for(byte i = 0; i < nfc.uid.size; i++) {
-        Serial.print(nfc.uid.uidByte[i] < 0x10 ? " 0" : " ");
-        Serial.print(nfc.uid.uidByte[i], HEX);
-    }
-    Serial.println();
-    
-    // Trigger sound based on card
-    if(config.randomPlay && soundFiles.size() > 0) {
-        String randomFile = getRandomSound();
-        playSound(randomFile);
-    }
-    
-    nfc.PICC_HaltA();
-    nfc.PCD_StopCrypto1();
-}
 
 void checkTriggerButton() {
     bool currentButtonState = digitalRead(BUTTON_PIN);
@@ -1175,24 +1179,24 @@ void handleFileUpload(AsyncWebServerRequest *request, String filename, size_t in
     
     if(!index) {
         // Start of upload
-        Serial.println("Upload start: " + filename);
+        debugPrintln("Upload start: " + filename);
         currentUploadFile = filename;
         
         // Open file for writing
         String filepath = "/" + filename;
         uploadFile = SPIFFS.open(filepath, "w");
         if(!uploadFile) {
-            Serial.println("ERROR: Failed to open file for writing: " + filepath);
+            debugPrintln("ERROR: Failed to open file for writing: " + filepath);
             return;
         }
-        Serial.println("File opened: " + filepath);
+        debugPrintln("File opened: " + filepath);
     }
     
     // Write data chunk
     if(uploadFile && len > 0) {
         size_t written = uploadFile.write(data, len);
         if(written != len) {
-            Serial.println("WARNING: Write incomplete " + String(written) + "/" + String(len));
+            debugPrintln("WARNING: Write incomplete " + String(written) + "/" + String(len));
         }
         yield(); // Give system time to breathe
     }
@@ -1201,13 +1205,13 @@ void handleFileUpload(AsyncWebServerRequest *request, String filename, size_t in
         // End of upload
         if(uploadFile) {
             uploadFile.close();
-            Serial.println("Upload complete: " + currentUploadFile + " (" + String(index + len) + " bytes)");
+            debugPrintln("Upload complete: " + currentUploadFile + " (" + String(index + len) + " bytes)");
             
             // Quick refresh of file list
             fileCacheValid = false;
             scanSoundFiles();
         } else {
-            Serial.println("ERROR: Upload file was null on final");
+            debugPrintln("ERROR: Upload file was null on final");
         }
         currentUploadFile = "";
     }
