@@ -268,9 +268,10 @@ void setup() {
             String filepath = String(config.startupSound);
             if(SPIFFS.exists("/" + filepath)) {
                 Serial.println("Playing startup sound: " + filepath);
-                // Use playSound so it gets same delay logic as trigger
-                isBootSound = true;  // Mark as boot for correct delay
-                playSound(filepath);
+                // Start boot animation directly with correct flag
+                startFloppyAnimation(true);
+                playWavFileBlocking("/" + filepath);
+                stopFloppyAnimation();
             } else {
                 Serial.println("Startup sound not found, playing beep");
                 startFloppyAnimation(true);
@@ -809,8 +810,8 @@ void playSound(const String& filename) {
     
     Serial.printf("Playing (blocking): %s\n", filename.c_str());
     
-    // Start floppy animation - use isBootSound if already set, otherwise trigger
-    startFloppyAnimation(isBootSound);
+    // Start floppy animation - trigger sounds always use trigger delay
+    startFloppyAnimation(false);
     
     // Play directly (will block until done)
     String filepath = "/" + filename;
@@ -975,12 +976,15 @@ void playWavFileBlocking(const String& filepath) {
                 unsigned long now = millis();
                 unsigned long delayTime = isBootSound ? config.delayDiskBoot : config.delayDiskTrigger;
                 
+                Serial.printf("DELAY CHECK: isBoot=%d, delayTime=%lu, elapsed=%lu\n", isBootSound, delayTime, now - floppyAnimStart);
+                
                 if((now - floppyAnimStart) >= delayTime) {
                     // Show floppy now
                     u8g2.clearBuffer();
                     drawFloppyDisk(50, 18, false);
                     u8g2.sendBuffer();
                     floppyDisplayed = true;
+                    Serial.printf(">>> FLOPPY DISPLAYED (isBoot=%d, delay=%lu)\n", isBootSound, delayTime);
                 }
             }
             
