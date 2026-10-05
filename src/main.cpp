@@ -81,6 +81,7 @@ struct Config {
     char ssid[32] = "FloppyDisk_AP";
     char password[32] = "";
     int volume = 50;
+    int displayBrightness = 255;
     bool randomPlay = true;
     char currentSound[64] = "default.wav";
     char startupSound[64] = "";  // Startup sound (empty = no sound)
@@ -266,6 +267,7 @@ void setup() {
     // Load configuration
     debugPrintln("Loading configuration...");
     loadConfiguration();
+    u8g2.setContrast(config.displayBrightness);
     
     // Scan for WAV files
     debugPrintln("Scanning for WAV files...");
@@ -512,6 +514,11 @@ void initWebServer() {
             "<label>Volume: <span id='volVal'>" + String(config.volume) + "</span>%</label>"
             "<input type='range' name='volume' min='0' max='100' value='" + String(config.volume) + "' "
             "oninput=\"document.getElementById('volVal').textContent=this.value\"><br>"
+
+            "<label>Display Brightness: <span id='brightnessVal'>" + String(config.displayBrightness) + "</span>/255</label>"
+            "<input type='range' name='displayBrightness' min='0' max='255' value='" + String(config.displayBrightness) + "' "
+            "oninput=\"document.getElementById('brightnessVal').textContent=this.value\" "
+            "onchange=\"fetch('/brightness?value='+this.value,{method:'POST'})\"><br>"
             
             "<label>Gain:</label>"
             "<select name='gain'>"
@@ -614,6 +621,10 @@ void initWebServer() {
         if(request->hasParam("volume", true)) {
             config.volume = request->getParam("volume", true)->value().toInt();
         }
+        if(request->hasParam("displayBrightness", true)) {
+            config.displayBrightness = constrain(request->getParam("displayBrightness", true)->value().toInt(), 0, 255);
+            u8g2.setContrast(config.displayBrightness);
+        }
         if(request->hasParam("gain", true)) {
             config.highGain = request->getParam("gain", true)->value().toInt() == 1;
             digitalWrite(I2S_GAIN, config.highGain ? HIGH : LOW);
@@ -641,6 +652,18 @@ void initWebServer() {
         
         saveConfiguration();
         request->redirect("/");
+    });
+
+    // Apply and persist the display brightness as soon as the slider is released.
+    server.on("/brightness", HTTP_POST, [](AsyncWebServerRequest *request){
+        if(request->hasParam("value")) {
+            config.displayBrightness = constrain(request->getParam("value")->value().toInt(), 0, 255);
+            u8g2.setContrast(config.displayBrightness);
+            saveConfiguration();
+            request->send(200, "text/plain", "Brightness updated");
+        } else {
+            request->send(400, "text/plain", "Missing brightness value");
+        }
     });
 
     // Delete file endpoint
@@ -729,6 +752,7 @@ void loadConfiguration() {
     preferences.getString("ssid", config.ssid, sizeof(config.ssid));
     preferences.getString("password", config.password, sizeof(config.password));
     config.volume = preferences.getInt("volume", 50);
+    config.displayBrightness = constrain(preferences.getInt("displayBrightness", 255), 0, 255);
     config.randomPlay = preferences.getBool("randomPlay", true);
 
     config.highGain = preferences.getBool("highGain", false);
@@ -754,6 +778,7 @@ void saveConfiguration() {
     preferences.putString("ssid", config.ssid);
     preferences.putString("password", config.password);
     preferences.putInt("volume", config.volume);
+    preferences.putInt("displayBrightness", config.displayBrightness);
     preferences.putBool("randomPlay", config.randomPlay);
 
     preferences.putBool("highGain", config.highGain);
